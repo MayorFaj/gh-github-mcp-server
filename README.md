@@ -5,7 +5,7 @@ A GitHub CLI extension providing simplified installation and authentication for 
 ## Installation
 
 ```bash
-gh extension install github/gh-github-mcp-server
+gh extension install MayorFaj/gh-github-mcp-server
 ```
 
 ## Usage
