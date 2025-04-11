@@ -11,5 +11,3 @@ gh extension install .
 echo "Extension installed. Run with: gh github-mcp-server stdio"
 
 gh github-mcp-server stdio
-
-
