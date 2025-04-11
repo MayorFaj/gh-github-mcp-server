@@ -11,14 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
 
 var (
-	version = "0.1.1"
+	version = "dev"
 	// Update this URL to point to the latest release of github-mcp-server
 	releaseAPIURL = "https://api.github.com/repos/github/github-mcp-server/releases/latest"
 )
@@ -258,6 +257,7 @@ func getLatestReleaseAssetURL() (string, error) {
 	}
 
 	// Make the request
+	fmt.Fprintf(os.Stderr, "Requesting latest release info from: %s\n", releaseAPIURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to get latest release info: %w", err)
@@ -265,7 +265,9 @@ func getLatestReleaseAssetURL() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to get latest release info: HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get latest release info: HTTP %d - %s",
+			resp.StatusCode, string(body))
 	}
 
 	// Parse the response
@@ -274,22 +276,81 @@ func getLatestReleaseAssetURL() (string, error) {
 			Name               string `json:"name"`
 			BrowserDownloadURL string `json:"browser_download_url"`
 		} `json:"assets"`
+		TagName string `json:"tag_name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		return "", fmt.Errorf("failed to parse release info: %w", err)
 	}
 
-	// Find the appropriate asset for the current platform
-	assetPattern := fmt.Sprintf("github-mcp-server.*%s.*%s", runtime.GOOS, runtime.GOARCH)
-	re, err := regexp.Compile("(?i)" + assetPattern) // (?i) makes it case insensitive
-	if err != nil {
-		return "", fmt.Errorf("failed to compile asset pattern: %w", err)
+	// Print all assets for debugging
+	fmt.Fprintf(os.Stderr, "Found release with %d assets:\n", len(release.Assets))
+	for _, asset := range release.Assets {
+		fmt.Fprintf(os.Stderr, "  - %s\n", asset.Name)
 	}
 
+	// Find the appropriate asset for the current platform
+	assetPattern := fmt.Sprintf("github-mcp-server.*%s.*%s", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(os.Stderr, "Looking for pattern: %s\n", assetPattern)
+
+	// Try standard naming convention
 	for _, asset := range release.Assets {
-		if re.MatchString(asset.Name) {
+		lowerName := strings.ToLower(asset.Name)
+		if strings.Contains(lowerName, strings.ToLower(runtime.GOOS)) &&
+			strings.Contains(lowerName, strings.ToLower(runtime.GOARCH)) {
+			fmt.Fprintf(os.Stderr, "Found matching asset: %s\n", asset.Name)
 			return asset.BrowserDownloadURL, nil
 		}
+	}
+
+	// Try macOS alternatives (mac, macos, osx)
+	if runtime.GOOS == "darwin" {
+		fmt.Fprintf(os.Stderr, "Trying macOS alternatives: mac, macos, osx\n")
+		macVariants := []string{"mac", "macos", "osx"}
+		for _, variant := range macVariants {
+			for _, asset := range release.Assets {
+				lowerName := strings.ToLower(asset.Name)
+				if strings.Contains(lowerName, variant) &&
+					(strings.Contains(lowerName, runtime.GOARCH) ||
+						strings.Contains(lowerName, "x86_64") ||
+						strings.Contains(lowerName, "amd64")) {
+					fmt.Fprintf(os.Stderr, "Found matching asset with macOS alternative: %s\n", asset.Name)
+					return asset.BrowserDownloadURL, nil
+				}
+			}
+		}
+	}
+
+	// Try architecture alternatives
+	if runtime.GOARCH == "amd64" {
+		fmt.Fprintf(os.Stderr, "Trying architecture alternatives: x86_64\n")
+		for _, asset := range release.Assets {
+			lowerName := strings.ToLower(asset.Name)
+			if strings.Contains(lowerName, strings.ToLower(runtime.GOOS)) &&
+				strings.Contains(lowerName, "x86_64") {
+				fmt.Fprintf(os.Stderr, "Found matching asset with architecture alternative: %s\n", asset.Name)
+				return asset.BrowserDownloadURL, nil
+			}
+		}
+	}
+
+	// As a last resort, look for a potentially universal binary for the OS
+	fmt.Fprintf(os.Stderr, "Looking for any binary for %s\n", runtime.GOOS)
+	for _, asset := range release.Assets {
+		lowerName := strings.ToLower(asset.Name)
+		if strings.Contains(lowerName, strings.ToLower(runtime.GOOS)) &&
+			!strings.Contains(lowerName, ".sha") &&
+			!strings.Contains(lowerName, ".md5") &&
+			!strings.Contains(lowerName, "src") &&
+			!strings.Contains(lowerName, "source") {
+			fmt.Fprintf(os.Stderr, "Found OS-matching asset: %s\n", asset.Name)
+			return asset.BrowserDownloadURL, nil
+		}
+	}
+
+	// If this is macOS/amd64, maybe suggest building from source
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "amd64" {
+		return "", fmt.Errorf("no suitable binary found for %s/%s. Consider building from source: "+
+			"go build -o bin/github-mcp-server ./cmd/github-mcp-server", runtime.GOOS, runtime.GOARCH)
 	}
 
 	return "", fmt.Errorf("no suitable binary found for %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -344,6 +405,7 @@ func extractFromTarGz(tarPath, targetPath string) error {
 
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
+		return err
 	}
 	defer gzr.Close()
 
